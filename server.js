@@ -1,6 +1,6 @@
 const express = require("express")
 const { exec } = require("child_process")
-const YTMusic = require("ytmusic-api")
+const { YTMusic } = require("ytmusic-api")
 const rateLimit = require("express-rate-limit")
 const helmet = require("helmet")
 
