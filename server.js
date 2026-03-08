@@ -43,6 +43,19 @@ function getCache(key) {
   return item.data
 }
 
+function sanitizeQuery(query) {
+  return String(query || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .slice(0, 120)
+}
+
+function sanitizeId(id) {
+  return String(id || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+}
+
 function safeExec(command, timeout = 20000) {
   return new Promise((resolve, reject) => {
     exec(command, { timeout }, (err, stdout, stderr) => {
@@ -54,29 +67,50 @@ function safeExec(command, timeout = 20000) {
   })
 }
 
-function sanitizeQuery(query) {
-  return String(query || "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .slice(0, 120)
-}
+async function getYtDlpCommand() {
+  const candidates = [
+    process.env.YTDLP_PATH,
+    "yt-dlp",
+    "/usr/local/bin/yt-dlp",
+    "/opt/render/project/.local/bin/yt-dlp"
+  ].filter(Boolean)
 
-function sanitizeId(id) {
-  return String(id || "").trim().replace(/[^a-zA-Z0-9_-]/g, "")
+  for (const cmd of candidates) {
+    try {
+      await safeExec(`${cmd} --version`, 10000)
+      return cmd
+    } catch {}
+  }
+
+  throw new Error("yt-dlp não encontrado no servidor")
 }
 
 // STATUS
-app.get("/status", (req, res) => {
-  res.json({
-    status: "online",
-    uptime: process.uptime()
-  })
+app.get("/status", async (req, res) => {
+  try {
+    let ytdlp = null
+
+    try {
+      ytdlp = await getYtDlpCommand()
+    } catch {}
+
+    res.json({
+      status: "online",
+      uptime: process.uptime(),
+      ytdlp: ytdlp || "não encontrado"
+    })
+  } catch (err) {
+    res.status(500).json({
+      status: "error",
+      message: err.message
+    })
+  }
 })
 
 // SEARCH
 app.get("/search", async (req, res) => {
   try {
-    let query = sanitizeQuery(req.query.q)
+    const query = sanitizeQuery(req.query.q)
 
     if (!query) {
       return res.status(400).json({
@@ -97,20 +131,58 @@ app.get("/search", async (req, res) => {
       })
     }
 
-    const command = `yt-dlp "ytsearch6:${query}" --dump-single-json --no-warnings --flat-playlist`
+    const ytdlp = await getYtDlpCommand()
 
-    const stdout = await safeExec(command, 20000)
+    const command = `${ytdlp} "ytsearch10:${query}" --dump-single-json --no-warnings`
+
+    const stdout = await safeExec(command, 25000)
     const parsed = JSON.parse(stdout)
-
     const entries = Array.isArray(parsed.entries) ? parsed.entries : []
 
-    const results = entries.map((item) => ({
-      title: item.title || "Sem título",
-      artist: item.channel || item.uploader || "Desconhecido",
-      videoId: item.id || null,
-      duration: item.duration || null,
-      artwork: item.thumbnail || null
-    })).filter(item => item.videoId)
+    const blockedWords = [
+      "slowed",
+      "reverb",
+      "speed up",
+      "sped up",
+      "nightcore",
+      "8d",
+      "live",
+      "ao vivo",
+      "remix",
+      "lyrics",
+      "letra",
+      "status"
+    ]
+
+    const results = entries
+      .map((item) => {
+        const title = item.title || "Sem título"
+        const artist = item.channel || item.uploader || "Desconhecido"
+        const text = `${title} ${artist}`.toLowerCase()
+
+        let score = 0
+        if (text.includes("official")) score += 5
+        if (text.includes("topic")) score += 4
+        if (text.includes("audio")) score += 3
+        if (text.includes("music")) score += 2
+
+        for (const word of blockedWords) {
+          if (text.includes(word)) score -= 8
+        }
+
+        return {
+          title,
+          artist,
+          videoId: item.id || null,
+          duration: item.duration || null,
+          artwork: item.thumbnail || null,
+          score
+        }
+      })
+      .filter(item => item.videoId)
+      .sort((a, b) => b.score - a.score)
+      .map(({ score, ...item }) => item)
+      .slice(0, 6)
 
     setCache(cacheKey, results, 30 * 60 * 1000)
 
@@ -151,11 +223,16 @@ app.get("/download", async (req, res) => {
       })
     }
 
+    const ytdlp = await getYtDlpCommand()
     const url = `https://music.youtube.com/watch?v=${id}`
 
-    const command = `yt-dlp -f bestaudio --no-playlist --no-warnings --add-header "User-Agent: Mozilla/5.0" -g "${url}"`
+    const command = `${ytdlp} -f bestaudio --no-playlist --no-warnings --add-header "User-Agent: Mozilla/5.0" -g "${url}"`
 
-    const stream = await safeExec(command, 15000)
+    const stream = await safeExec(command, 20000)
+
+    if (!stream) {
+      throw new Error("nenhum link de áudio foi retornado")
+    }
 
     setCache(cacheKey, stream, 60 * 60 * 1000)
 
@@ -167,7 +244,7 @@ app.get("/download", async (req, res) => {
   } catch (err) {
     res.status(500).json({
       status: "error",
-      message: "erro ao extrair áudio"
+      message: err.message
     })
   }
 })
