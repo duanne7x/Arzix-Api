@@ -70,9 +70,10 @@ function safeExec(command, timeout = 20000) {
 async function getYtDlpCommand() {
   const candidates = [
     process.env.YTDLP_PATH,
-    "yt-dlp",
+    "/opt/render/.local/bin/yt-dlp",
+    "/opt/render/project/.local/bin/yt-dlp",
     "/usr/local/bin/yt-dlp",
-    "/opt/render/project/.local/bin/yt-dlp"
+    "yt-dlp"
   ].filter(Boolean)
 
   for (const cmd of candidates) {
